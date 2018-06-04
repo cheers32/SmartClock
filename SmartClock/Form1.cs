@@ -21,6 +21,8 @@ namespace WindowsFormsApp2
             Reset();            
         }
         Graphics g;
+        private List<Task> loadedTasks;
+        private Task currentTask;
 
         public void LogEventTime(string eventText, string minutes, string project, string type)
         {
@@ -132,7 +134,17 @@ namespace WindowsFormsApp2
             label4.Text = "";
             startTime = new DateTime();
             g = this.CreateGraphics();
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;            
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            comboBox5.SelectedIndex = 0;
+            ChangeQuadrant();
+            label9.Text = "";
+            label10.Text = "";
+            label11.Text = "";
+            label12.Text = "";
+            loadedTasks = new List<Task>();
+            currentTask = null;
+
             LogEvent("Timer is reset.");            
         }
 
@@ -392,7 +404,7 @@ namespace WindowsFormsApp2
             }            
         }
 
-        private void button5_Click(object sender, EventArgs e)
+        void HandleSyncClick()
         {
             if (remainSecs == 0)
             {
@@ -400,6 +412,68 @@ namespace WindowsFormsApp2
                 return;
             }
             SyncTime();
+        }
+
+        void UpdateTask()
+        {
+            var isTaskSelected = comboBox3.SelectedIndex != -1;
+            if (!isTaskSelected)
+            {
+                label9.Text = "Select a task to update.";
+                return;
+            }
+            var task = GatherTaskInfo();
+
+            var insertQuery = "UPDATE Task SET ValidUntil=current_timestamp WHERE Id="+task.Id+
+                " INSERT INTO Task VALUES (" + GetField(task.TaskName) + GetField(task.Urgent) + GetField(task.Important) + GetField(task.Type) + GetField(task.Status)
+                              + GetField(task.Priority1) + GetField(task.Priority2) + GetField(task.Comments) + GetField(task.Estimate) + "current_timestamp," + GetField(task.Id.ToString()) + " '9999-12-31 23:59:59')";
+            OpenConnection();
+            SqlCommand insert = new SqlCommand(insertQuery.ToString(), Conn);
+            insert.ExecuteNonQuery();
+            CloseConnection();
+
+            label9.Text = "Task ID:"+task.Id+" Updated (Status:"+task.Status+").";
+        }
+
+        Task GatherTaskInfo()
+        {
+            var task = new Task();
+            task.TaskName = textBox2.Text;
+            task.Urgent = checkBox1.Checked.ToString();
+            task.Important = checkBox2.Checked.ToString();
+            task.Type = label2.Text;
+            task.Status = comboBox5.Text.Equals("All") ? "No Plan" : comboBox5.Text;
+            task.Priority1 = textBox4.Text;
+            task.Priority2 = textBox5.Text;
+            task.Comments = textBox1.Text;
+            task.Estimate = textBox6.Text;
+            task.Id = currentTask == null ? -1 : currentTask.Id;
+            return task;
+        }
+
+        void InsertTask()
+        {
+            if (string.IsNullOrWhiteSpace(textBox2.Text))
+            {
+                label9.Text = "Task name cannot be empty";
+                return;
+            }
+            var task = GatherTaskInfo();
+            
+            var insertQuery = " INSERT INTO Task VALUES (" + GetField(task.TaskName) + GetField(task.Urgent) + GetField(task.Important) + GetField(task.Type) + GetField(task.Status)
+                              + GetField(task.Priority1) + GetField(task.Priority2) + GetField(task.Comments) + GetField(task.Estimate) + "current_timestamp" + ",(SELECT MAX(Id)+1 FROM Task), '9999-12-31 23:59:59')";
+            OpenConnection();
+            SqlCommand insert = new SqlCommand(insertQuery, Conn);
+            insert.ExecuteNonQuery();
+            CloseConnection();
+
+            label9.Text = "New task added (Status:" + task.Status + ").";
+        }
+
+        private void button5_Click(object sender, EventArgs e)
+        {
+            UpdateTask();
+            LoadTasks();
         }
 
         private void panel1_Leave(object sender, EventArgs e)
@@ -450,6 +524,308 @@ namespace WindowsFormsApp2
         private void button7_Click(object sender, EventArgs e)
         {
             this.Close();
+        }
+
+        private void button8_Click(object sender, EventArgs e)
+        {
+            LoadTasks();
+            label9.Text = loadedTasks.Count + " tasks loaded.";
+        }
+
+        void LoadTasks()
+        {
+            var status = comboBox5.SelectedItem.ToString();
+            loadedTasks = LoadTasksByStatus(status);
+            comboBox3.Items.Clear();
+            foreach (var task in loadedTasks)
+            {
+                comboBox3.Items.Add(task.Type + " - " + task.TaskName+" ("+task.Status+")");
+            }
+            if (loadedTasks.Count > 0)
+                comboBox3.SelectedIndex = 0;
+        }
+
+        List<Task> LoadTasksByText(string text)
+        {
+            var selectQuery = "SELECT * FROM Task WHERE Task LIKE " + GetField("%"+text+"%", false) + " ORDER BY UpdateTime DESC";
+            OpenConnection();
+            SqlCommand select = new SqlCommand(selectQuery.ToString(), Conn);
+            var res = new List<Task>();
+            using (SqlDataReader reader = select.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    Task task = new Task();
+                    task.TaskName = reader["Task"].ToString();
+                    task.Urgent = reader["Urgent"].ToString();
+                    task.Important = reader["Important"].ToString();
+                    task.Type = reader["Type"].ToString();
+                    task.Status = reader["Status"].ToString();
+                    task.Priority1 = reader["Priority1"].ToString();
+                    task.Priority2 = reader["Priority2"].ToString();
+                    task.Comments = reader["Comments"].ToString();
+                    task.Estimate = reader["Estimate"].ToString();
+                    task.UpdateTime = DateTime.Parse(reader["UpdateTime"].ToString());
+                    task.Id = int.Parse(reader["Id"].ToString());
+                    task.ValidUntil = DateTime.Parse(reader["ValidUntil"].ToString());
+                    res.Add(task);
+                }
+            }
+            CloseConnection();
+            return res;
+        }
+
+        void LoadHistory()
+        {
+            if (currentTask == null)
+            {
+                label9.Text = "Select a task to load history ORDER BY Id DESC";
+                return;
+            }
+
+            loadedTasks = LoadTasksById(currentTask.Id.ToString());
+            comboBox3.Items.Clear();
+            foreach (var task in loadedTasks)
+            {
+                comboBox3.Items.Add(task.Type + " - " + task.TaskName + " (" + task.Status + ")");
+            }
+
+        }
+
+        List<Task> LoadTasksById(string id)
+        {
+            var selectQuery = "SELECT * FROM Task WHERE Id =" + GetField(id, false) + "ORDER BY UpdateTime DESC";
+            OpenConnection();
+            SqlCommand select = new SqlCommand(selectQuery.ToString(), Conn);
+            var res = new List<Task>();
+            using (SqlDataReader reader = select.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    Task task = new Task();
+                    task.TaskName = reader["Task"].ToString();
+                    task.Urgent = reader["Urgent"].ToString();
+                    task.Important = reader["Important"].ToString();
+                    task.Type = reader["Type"].ToString();
+                    task.Status = reader["Status"].ToString();
+                    task.Priority1 = reader["Priority1"].ToString();
+                    task.Priority2 = reader["Priority2"].ToString();
+                    task.Comments = reader["Comments"].ToString();
+                    task.Estimate = reader["Estimate"].ToString();
+                    task.UpdateTime = DateTime.Parse(reader["UpdateTime"].ToString());
+                    task.Id = int.Parse(reader["Id"].ToString());
+                    task.ValidUntil = DateTime.Parse(reader["ValidUntil"].ToString());
+                    res.Add(task);
+                }
+            }
+            CloseConnection();
+            return res;
+        }
+
+        List<Task> LoadTasksByStatus(string status)
+        {
+            var selectQuery = status.Equals("All")? " SELECT * FROM Task WHERE ValidUntil>=current_timestamp ORDER BY UpdateTime DESC" 
+                : " SELECT * FROM Task WHERE ValidUntil>=current_timestamp AND Status =" + GetField(status,false) + "ORDER BY UpdateTime DESC";
+            OpenConnection();
+            SqlCommand select = new SqlCommand(selectQuery.ToString(), Conn);
+            var res = new List<Task>();
+            using (SqlDataReader reader = select.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    Task task = new Task();
+                    task.TaskName = reader["Task"].ToString();
+                    task.Urgent = reader["Urgent"].ToString();
+                    task.Important = reader["Important"].ToString();
+                    task.Type = reader["Type"].ToString();
+                    task.Status = reader["Status"].ToString();
+                    task.Priority1 = reader["Priority1"].ToString();
+                    task.Priority2 = reader["Priority2"].ToString();
+                    task.Comments = reader["Comments"].ToString();
+                    task.Estimate = reader["Estimate"].ToString();
+                    task.UpdateTime = DateTime.Parse(reader["UpdateTime"].ToString());
+                    task.Id = int.Parse(reader["Id"].ToString());
+                    task.ValidUntil = DateTime.Parse(reader["ValidUntil"].ToString());
+                    res.Add(task);
+                }
+            }
+            CloseConnection();
+            return res;
+        }
+
+        public class Task
+        {
+            public string TaskName { get; set; }
+            public string Urgent { get; set; }
+            public string Important { get; set; }
+            public string Type { get; set; }
+            public string Status { get; set; }
+            public string Priority1 { get; set; }
+            public string Priority2 { get; set; }
+            public string Comments { get; set; }
+            public string Estimate { get; set; }
+            public DateTime UpdateTime { get; set; }
+            public int Id { get; set; }
+            public DateTime ValidUntil { get; set; }
+        }
+
+        private void checkBox1_CheckedChanged(object sender, EventArgs e)
+        {
+            ChangeQuadrant();
+        }
+
+        private void checkBox2_CheckedChanged(object sender, EventArgs e)
+        {
+            ChangeQuadrant();
+        }
+
+        void ChangeQuadrant()
+        {
+            var urgent = checkBox1.Checked;
+            var important = checkBox2.Checked;
+            if (urgent && important)
+            {
+                label2.Text = "Q1";
+                label2.ForeColor = Color.Gold;
+            }
+            else if (!urgent && important)
+            {
+                label2.Text = "Q2";
+                label2.ForeColor = Color.MediumSeaGreen;
+            }
+            else if (urgent && !important)
+            {
+                label2.Text = "Q3";
+                label2.ForeColor = Color.LightSkyBlue;
+            }
+            else if (!urgent && !important)
+            {
+                label2.Text = "Q4";
+                label2.ForeColor = Color.Red;
+            }
+        }
+
+        private void comboBox3_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            currentTask = loadedTasks[comboBox3.SelectedIndex];
+            DisplayTask(currentTask);
+        }
+
+        void DisplayTask(Task task)
+        {
+            this.textBox2.Text = task.TaskName;
+            this.checkBox1.Checked = bool.Parse(task.Urgent);
+            this.checkBox2.Checked = bool.Parse(task.Important);
+            this.comboBox5.Text = task.Status;
+            this.textBox4.Text = task.Priority1;
+            this.textBox5.Text = task.Priority2;
+            this.textBox1.Text = task.Comments;
+            this.textBox6.Text = task.Estimate;
+            this.label10.Text = task.UpdateTime.ToString();
+            this.label12.Text = "Id: "+task.Id.ToString();
+            this.label11.Text = task.ValidUntil.ToString();
+        }
+
+        private void button9_Click(object sender, EventArgs e)
+        {
+            InsertTask();
+            ClearInput();
+            LoadTasks();
+            ClearInput();
+        }
+
+        private void button11_Click(object sender, EventArgs e)
+        {
+            LoadHistory();
+            label9.Text = loadedTasks.Count + " history loaded.";
+        }
+
+        void ClearInput()
+        {
+            checkBox1.Checked = false;
+            checkBox2.Checked = false;
+            textBox4.Text = "";
+            textBox5.Text = "";
+            textBox6.Text = "";
+            comboBox5.SelectedIndex = 0;
+            textBox1.Text = "";
+            textBox2.Text = "";
+        }
+
+        private void comboBox5_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            var status = comboBox5.SelectedItem.ToString();
+            switch (status)
+            {
+
+                case "Completed":
+                    comboBox5.BackColor = Color.Purple;
+                    comboBox5.ForeColor = Color.Beige;
+                    break;
+                case "No Plan":
+                    comboBox5.BackColor = Color.LightGray;
+                    comboBox5.ForeColor = Color.Black;
+                    break;
+                case "Planned":
+                    comboBox5.BackColor = Color.SkyBlue;
+                    comboBox5.ForeColor = Color.Black;
+                    break;
+                case "In Progress":
+                    comboBox5.BackColor = Color.MediumSeaGreen;
+                    comboBox5.ForeColor = Color.Black;
+                    break;
+                case "Cancelled":
+                    comboBox5.BackColor = Color.Gray;
+                    comboBox5.ForeColor = Color.Black;
+                    break;
+                case "All":
+                    comboBox5.BackColor = Color.DimGray;
+                    comboBox5.ForeColor = Color.Beige;
+                    break;
+            }
+        }
+
+        private void textBox2_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter && button1.Enabled)
+            {
+                InsertTask();
+                ClearInput();
+                LoadTasks();
+                ClearInput();
+            }
+        }
+
+        private void button12_Click(object sender, EventArgs e)
+        {
+            SearchText();
+            label9.Text = loadedTasks.Count + " search results returned.";
+        }
+
+        void SearchText()
+        {
+            loadedTasks = LoadTasksByText(textBox1.Text);
+            comboBox3.Items.Clear();
+            foreach (var task in loadedTasks)
+            {
+                comboBox3.Items.Add(task.Type + " - " + task.TaskName + " (" + task.Status + ")");
+            }
+        }
+
+        private void textBox1_KeyDown_1(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter && button1.Enabled)
+            {
+                SearchText();
+                label9.Text = loadedTasks.Count + " search results returned.";
+                if(loadedTasks.Count>0)
+                    comboBox3.SelectedIndex = 0;
+            }
+        }
+
+        private void button13_Click(object sender, EventArgs e)
+        {
+            ClearInput();
         }
     }
 }
